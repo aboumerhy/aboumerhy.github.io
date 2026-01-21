@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>3D Filament Estimator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.11.0/jszip.min.js"></script>
+<style>
+  body { font-family: sans-serif; margin: 40px; }
+  input, button { margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<h1>3D Filament & Cost Estimator</h1>
+
+<label>Upload STL or 3MF file: </label>
+<input type="file" id="fileInput"><br>
+
+<label>Filament type: </label>
+<select id="filamentType">
+  <option value="PLA">PLA</option>
+  <option value="ABS">ABS</option>
+  <option value="PETG">PETG</option>
+</select><br>
+
+<label>Infill %: </label>
+<input type="number" id="infill" value="20" min="0" max="100"><br>
+
+<label>Filament cost per gram ($): </label>
+<input type="number" id="cost" value="0.05" step="0.01"><br>
+
+<button onclick="estimate()">Estimate</button>
+
+<h2>Results:</h2>
+<div id="output"></div>
+
+<script>
+async function estimate() {
+    const file = document.getElementById("fileInput").files[0];
+    if (!file) {
+        alert("Please select a file.");
+        return;
+    }
+
+    const filamentType = document.getElementById("filamentType").value;
+    const infill = parseFloat(document.getElementById("infill").value)/100;
+    const costPerGram = parseFloat(document.getElementById("cost").value);
+
+    let density = 1.24; // default PLA
+    if (filamentType === "ABS") density = 1.04;
+    if (filamentType === "PETG") density = 1.27;
+
+    const ext = file.name.split('.').pop().toLowerCase();
+    let volume_cm3 = 0;
+
+    if (ext === "stl") {
+        volume_cm3 = await parseSTL(file);
+    } else if (ext === "3mf") {
+        volume_cm3 = await parse3MF(file);
+    } else {
+        alert("Unsupported file type.");
+        return;
+    }
+
+    const weight_g = volume_cm3 * infill * density;
+    const filament_diameter_cm = 1.75/10/2;
+    const crossArea = Math.PI * filament_diameter_cm**2;
+    const length_m = weight_g / (density * crossArea) / 100;
+    const price = weight_g * costPerGram;
+
+    document.getElementById("output").innerHTML = `
+        Model volume: ${volume_cm3.toFixed(2)} cm³<br>
+        Estimated filament weight: ${weight_g.toFixed(2)} g<br>
+        Estimated filament length: ${length_m.toFixed(2)} m<br>
+        Estimated price: $${price.toFixed(2)}
+    `;
+}
+
+// --- Parse STL file ---
+function parseSTL(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const dv = new DataView(e.target.result);
+            let volume = 0;
+            const triCount = dv.getUint32(80, true);
+            let offset = 84;
+            for (let i=0;i<triCount;i++) {
+                const v = [];
+                for (let j=0;j<3;j++){
+                    const x = dv.getFloat32(offset,true); offset+=4;
+                    const y = dv.getFloat32(offset,true); offset+=4;
+                    const z = dv.getFloat32(offset,true); offset+=4;
+                    v.push([x,y,z]);
+                }
+                offset += 2 + 12; // skip normal + attr
+                const [v0,v1,v2] = v;
+                volume += (v0[0]*(v1[1]*v2[2]-v2[1]*v1[2])
+                        -v0[1]*(v1[0]*v2[2]-v2[0]*v1[2])
+                        +v0[2]*(v1[0]*v2[1]-v2[0]*v1[1]))/6;
+            }
+            resolve(Math.abs(volume)/1000); // mm³ → cm³
+        };
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+// --- Parse 3MF file ---
+async function parse3MF(file) {
+    const jszip = new JSZip();
+    const zip = await jszip.loadAsync(file);
+    let volume = 0;
+    // 3MF meshes usually in /3D/3dmodel.model
+    const modelFile = Object.keys(zip.files).find(f => f.endsWith('.model') || f.endsWith('.xml'));
+    if (!modelFile) return 0;
+    const content = await zip.files[modelFile].async("text");
+    const parser = new DOMParser();
+    const xml = parser.parseFromString(content,"text/xml");
+    const meshes = xml.getElementsByTagName("mesh");
+    for(let mesh of meshes){
+        const vertices = [];
+        const vertexElems = mesh.getElementsByTagName("vertex");
+        for(let v of vertexElems){
+            vertices.push([
+                parseFloat(v.getAttribute("x")),
+                parseFloat(v.getAttribute("y")),
+                parseFloat(v.getAttribute("z"))
+            ]);
+        }
+        const triangles = mesh.getElementsByTagName("triangle");
+        for(let t of triangles){
+            const v0 = vertices[parseInt(t.getAttribute("v1"))];
+            const v1 = vertices[parseInt(t.getAttribute("v2"))];
+            const v2 = vertices[parseInt(t.getAttribute("v3"))];
+            volume += (v0[0]*(v1[1]*v2[2]-v2[1]*v1[2])
+                    -v0[1]*(v1[0]*v2[2]-v2[0]*v1[2])
+                    +v0[2]*(v1[0]*v2[1]-v2[0]*v1[1]))/6;
+        }
+    }
+    return Math.abs(volume)/1000; // mm³ → cm³
+}
+</script>
+</body>
+</html>
